@@ -20,8 +20,8 @@ use crate::domain::{AdvanceKind, PlayQueue, RepeatMode, ScanEvent, ScanSummary, 
 use crate::library;
 use crate::playback::{AudioEngine, is_playable};
 use crate::ui::fonts;
+use crate::ui::theme;
 use crate::ui::widgets;
-
 /// 状态栏提示的保留时长。
 const MESSAGE_TTL: Duration = Duration::from_secs(6);
 
@@ -55,6 +55,8 @@ impl EchoApp {
     pub fn new(cc: &eframe::CreationContext<'_>, db: Db) -> Self {
         // 中文字体必须最先装：否则后面所有窗口文字都会是方块。
         fonts::install_cjk_fonts(&cc.egui_ctx);
+        // 主题要紧接着装：字体大小与配色一起决定观感。
+        theme::apply(&cc.egui_ctx);
         // 内嵌封面由我们自己解码（见 covers.rs），但仍安装 egui_extras 的
         // 加载器，以便将来支持从 file:// 路径加载图片。
         egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -405,10 +407,22 @@ impl EchoApp {
         let mut covers = std::mem::take(&mut self.covers);
         let db = self.db.clone();
 
+        // 虚拟化渲染：只实例化可见区间的行。
+        //
+        // 之前这里是全量 `for` 循环，几千首曲目会一次性构建全部行、
+        // 解码全部缩略图，界面会明显卡顿。show_rows 由 egui 算好可见区间，
+        // 我们只画那几十行 —— 这是行高必须固定的原因。
+        let row_height = theme::ROW_HEIGHT + ui.spacing().item_spacing.y;
+        let total = rows.len();
+
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                for (index, title, artist, duration, cover_hash, playable) in &rows {
+            .show_rows(ui, row_height, total, |ui, range| {
+                for i in range {
+                    let Some((index, title, artist, duration, cover_hash, playable)) = rows.get(i)
+                    else {
+                        continue;
+                    };
                     let thumbnail = covers.get_for_track(&ctx, &db, cover_hash.as_deref());
                     let row = widgets::TrackRow {
                         index: *index,
@@ -422,7 +436,8 @@ impl EchoApp {
                     if widgets::track_row(ui, &row) {
                         clicked = Some(*index);
                     }
-                    ui.separator();
+                    // 用留白而不是分隔线：靠背景层次区分行，观感更干净。
+                    ui.add_space(ui.spacing().item_spacing.y);
                 }
             });
 
@@ -586,46 +601,103 @@ impl EchoApp {
             return;
         };
 
-        ui.vertical_centered(|ui| {
-            let available = ui.available_width().min(320.0);
-            let ctx = ui.ctx().clone();
-            let mut covers = std::mem::take(&mut self.covers);
-            let db = self.db.clone();
-            let thumb = covers.get_for_track(&ctx, &db, track.cover_hash.as_deref());
-            self.covers = covers;
+        // 双栏：左侧封面、右侧信息。居中的单栏在这块宽画布上会显得空。
+        let ctx2 = ui.ctx().clone();
+        let mut covers = std::mem::take(&mut self.covers);
+        let db2 = self.db.clone();
+        let thumb = covers.get_for_track(&ctx2, &db2, track.cover_hash.as_deref());
+        self.covers = covers;
 
-            widgets::big_cover(ui, thumb.as_ref(), available);
-            ui.add_space(12.0);
+        let cover_side = 300.0_f32.min(ui.available_width() * 0.42);
+        let row_height = cover_side.max(220.0);
 
-            ui.heading(track.display_title());
-            ui.label(track.display_artist());
-            if !track.album.is_empty() {
-                ui.weak(format!("《{}》", track.album));
-            }
+        ui.add_space(24.0);
+        ui.horizontal_top(|ui| {
+            // 让整块内容在水平方向大致居中。
+            let indent = ((ui.available_width() - (cover_side + 340.0)) * 0.5).max(0.0);
+            ui.add_space(indent);
 
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.weak(format!("时长 {}", track.duration_text()));
-                if let Some(year) = track.year {
-                    ui.weak(format!("· {year} 年"));
-                }
-                if !track.genre.is_empty() {
-                    ui.weak(format!("· {}", track.genre));
-                }
-            });
+            widgets::big_cover(ui, thumb.as_ref(), cover_side);
+            ui.add_space(36.0);
 
-            if !is_playable(&track.path) {
-                ui.add_space(6.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 140, 60),
-                    "该格式 rodio 无法解码，仅能展示元数据",
-                );
-            }
+            ui.allocate_ui_with_layout(
+                egui::Vec2::new(300.0, row_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    // 让文字块与封面垂直居中。
+                    ui.add_space((row_height - 210.0).max(0.0) * 0.5);
 
-            ui.add_space(4.0);
-            ui.small(widgets::ellipsize(&track.path.display().to_string(), 70));
+                    ui.label(
+                        egui::RichText::new(track.display_title())
+                            .size(26.0)
+                            .color(theme::TEXT),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(track.display_artist())
+                            .size(16.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                    if !track.album.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("《{}》", track.album))
+                                .size(14.0)
+                                .color(theme::TEXT_FAINT),
+                        );
+                    }
+
+                    ui.add_space(18.0);
+
+                    // 元信息排成一行「胶囊」，比一串用 · 连接的灰字更清楚。
+                    let mut chips: Vec<String> = vec![track.duration_text()];
+                    if let Some(year) = track.year {
+                        chips.push(format!("{year} 年"));
+                    }
+                    if !track.genre.is_empty() {
+                        chips.push(track.genre.clone());
+                    }
+                    if let Some(rate) = track.sample_rate {
+                        chips.push(format!("{:.1} kHz", rate as f32 / 1000.0));
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        for chip in &chips {
+                            chip_label(ui, chip);
+                        }
+                    });
+
+                    if !is_playable(&track.path) {
+                        ui.add_space(12.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xe8, 0x95, 0x54),
+                            "⚠ 该格式 rodio 无法解码，仅能展示元数据",
+                        );
+                    }
+
+                    ui.add_space(20.0);
+                    ui.label(
+                        egui::RichText::new(widgets::ellipsize(
+                            &track.path.display().to_string(),
+                            56,
+                        ))
+                        .small()
+                        .color(theme::TEXT_FAINT),
+                    );
+                },
+            );
         });
     }
+}
+
+/// 小而圆的标签，用于展示时长/年份/流派这类元信息。
+fn chip_label(ui: &mut egui::Ui, text: &str) {
+    egui::Frame::new()
+        .fill(theme::BG_PANEL)
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).small().color(theme::TEXT_DIM));
+        });
 }
 
 /// 传输区本帧检测到的用户操作。

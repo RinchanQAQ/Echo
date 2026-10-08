@@ -4,4 +4,5 @@
 
 pub mod app;
 pub mod fonts;
+pub mod theme;
 pub mod widgets;

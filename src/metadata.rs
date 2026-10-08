@@ -226,6 +226,96 @@ pub fn write_tagged_test_wav(path: &Path, title: &str, artist: &str, album: &str
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 演示素材生成（仅在开启 `demo-data` 特性时编译）
+//
+// 用途：本地验收界面观感。需要一批**带内嵌封面**的音频，而本机既没有
+// 现成素材也不方便联网下载，所以现场造。
+//
+// 为什么选 FLAC：MPEG 解析器要求真的存在音频帧，手拼的假 MP3 会得到
+// `failed to parse Mpeg file`；而 FLAC 允许 `total_samples = 0`，
+// 构造「合法但没有音频帧」的文件骨架是被允许的。
+// 因此这些文件用于**界面预览**，不能播放。
+// ---------------------------------------------------------------------------
+
+/// 手工拼一个合法的、只含元数据的 FLAC 文件骨架。
+#[cfg(feature = "demo-data")]
+pub fn write_flac_skeleton(path: &Path) -> Result<()> {
+    /// 拼一个元数据块（最后一块的块头标志位置 1）。
+    fn meta_block(block_type: u8, last: bool, body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.push(if last { 0x80 } else { 0x00 } | block_type);
+        let len = body.len() as u32;
+        out.extend_from_slice(&[
+            ((len >> 16) & 0xff) as u8,
+            ((len >> 8) & 0xff) as u8,
+            (len & 0xff) as u8,
+        ]);
+        out.extend_from_slice(body);
+        out
+    }
+
+    // STREAMINFO：34 字节，全零即可（total_samples = 0）。
+    let streaminfo = [0u8; 34];
+    // 空的 Vorbis Comment：4 字节厂商长度(0) + 4 字节注释数(0)。
+    let empty_vc = [0u8; 8];
+
+    let mut file = Vec::new();
+    file.extend_from_slice(b"fLaC");
+    file.extend_from_slice(&meta_block(0, false, &streaminfo)); // 0 = STREAMINFO
+    file.extend_from_slice(&meta_block(4, true, &empty_vc)); // 4 = VORBIS_COMMENT
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, file)?;
+    Ok(())
+}
+
+/// 生成一个带文本标签的 FLAC（无音频帧，仅供界面预览）。
+#[cfg(feature = "demo-data")]
+pub fn write_test_flac(
+    path: &Path,
+    title: &str,
+    artist: &str,
+    album: &str,
+    track: u32,
+) -> Result<()> {
+    use lofty::config::WriteOptions;
+    use lofty::tag::{Accessor, Tag};
+
+    write_flac_skeleton(path)?;
+    let mut tagged = Probe::open(path)?.guess_file_type()?.read()?;
+    let tag_type = tagged.primary_tag_type();
+    let mut tag = Tag::new(tag_type);
+    tag.set_title(title.to_owned());
+    tag.set_artist(artist.to_owned());
+    tag.set_album(album.to_owned());
+    tag.set_track(track);
+    tagged.insert_tag(tag);
+    tagged.save_to_path(path, WriteOptions::default())?;
+    Ok(())
+}
+
+/// 把一张封面写进已有音频文件的标签。
+#[cfg(feature = "demo-data")]
+pub fn embed_cover(path: &Path, image_bytes: &[u8]) -> Result<()> {
+    use lofty::config::WriteOptions;
+    use lofty::picture::{Picture, PictureType};
+
+    let mut tagged = Probe::open(path)?.guess_file_type()?.read()?;
+    let tag = tagged
+        .primary_tag_mut()
+        .ok_or_else(|| anyhow::anyhow!("文件没有主标签，无法写入封面"))?;
+    tag.push_picture(
+        Picture::unchecked(image_bytes.to_vec())
+            .pic_type(PictureType::CoverFront)
+            .build(),
+    );
+    tagged.save_to_path(path, WriteOptions::default())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

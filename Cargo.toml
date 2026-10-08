@@ -53,6 +53,21 @@ rfd = "=0.17.2"
 # 进 yeslogic-fontconfig-sys）。若日后需要按族名做更精细的回退，
 # 可在 platform/mod.rs 里针对单个平台加一个 cfg 分支。
 
+[features]
+# 生成演示音频素材的辅助函数（见 examples/seed_demo_library.rs）。
+# 只在本地验收界面观感时开启，正式构建不含这些代码。
+demo-data = []
+
+# 演示示例依赖 demo-data 特性；不声明的话 `cargo test` 会尝试编译它并失败。
+[[example]]
+name = "seed_demo_library"
+required-features = ["demo-data"]
+
+[lints.clippy]
+# theme.rs 里用 Default::default() 再逐字段赋值来构造 Spacing/Style ——
+# 这些结构体字段很多且大多保持默认，逐字段赋值比巨型字面量可读得多。
+field_reassign_with_default = "allow"
+
 [profile.dev]
 # 默认 debug 信息会让二进制膨胀到数百 MB，降到 1 只保留行号。
 debug = 1

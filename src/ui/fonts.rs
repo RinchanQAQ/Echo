@@ -5,9 +5,12 @@
 //! 如果不额外装入系统字体，界面上的「曲库」「播放」以及中文歌曲标签
 //! 全都会渲染成空心方块（tofu），因此这一步是中文可用性的前提。
 //!
-//! 装配方式是把中文字体**追加到字体族列表的末尾**：
-//! 拉丁字符仍由内置的 Ubuntu-Light 渲染（观感更好、字重更合适），
-//! 只有它缺失的字形（也就是汉字）才回退到我们装入的字体。
+//! 装配策略是**中文优先**：把中文字体放在字体族列表的最前面。
+//!
+//! 之前是反过来的（拉丁用内置 Ubuntu-Light，汉字回退到末尾）。
+//! 那种写法在英文界面里没问题，但中文界面的绝大多数文字是汉字，
+//! 由 Ubuntu-Light 主导会让汉字与数字混排时字重、基线都不统一，
+//! 观感明显别扭 —— 中文界面应当让中文字体打头，拉丁字符自然回退。
 
 use std::sync::Arc;
 
@@ -15,7 +18,7 @@ use egui::{FontData, FontDefinitions, FontFamily};
 
 use crate::platform;
 
-/// 装入中文字体。返回是否成功装入。
+/// 装入中文字体并将其设为首选。返回是否成功装入。
 ///
 /// 找不到任何中文字体时不会 panic，只在日志里警告 ——
 /// 程序仍然可用，只是中文会显示为方块。
@@ -27,27 +30,27 @@ pub fn install_cjk_fonts(ctx: &egui::Context) -> bool {
 
     let mut fonts = FontDefinitions::default();
 
-    // 注册字体数据。名字带哈希无关，取一个稳定的内部键即可。
+    // 注册字体数据。内部键取一个稳定的名字即可。
     const FONT_KEY: &str = "cjk";
     fonts.font_data.insert(
         FONT_KEY.to_owned(),
         Arc::new(FontData::from_owned(font.bytes)),
     );
 
-    // 追加到两种字体族的末尾作为回退：
+    // 插到两种字体族的最前面作为首选：
     // - Proportional 用于绝大多数界面文字；
-    // - Monospace 用于代码/数字对齐的场景（例如时长）。
+    // - Monospace 用于需要对齐的场景（例如时长）。
+    //
+    // 内置字体仍排在后面，因此「√」这类中文字体里没有的符号
+    // 依然能回退到 Ubuntu-Light 找到字形，不会变成方块。
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push(FONT_KEY.to_owned());
+        let list = fonts.families.entry(family).or_default();
+        list.insert(0, FONT_KEY.to_owned());
     }
 
     ctx.set_fonts(fonts);
 
-    log::info!("中文字体已启用：{}", font.label);
+    log::info!("中文字体已启用（首选）：{}", font.label);
     true
 }
 
@@ -68,31 +71,32 @@ mod tests {
     }
 
     #[test]
-    fn font_family_lists_include_cjk_when_installed() {
-        // 直接验证装配逻辑的核心断言：追加后 CJK 键出现在族列表末尾，
-        // 且内置字体仍排在其前面（保证拉丁字形优先）。
+    fn font_family_lists_put_cjk_first() {
+        // 验证装配策略：CJK 键排在族列表**最前面**（中文优先），
+        // 而内置字体仍保留在后面作为拉丁字符与符号的回退。
         let mut fonts = FontDefinitions::default();
         fonts
             .font_data
             .insert("cjk".to_owned(), Arc::new(FontData::from_owned(fake_ttf())));
         for family in [FontFamily::Proportional, FontFamily::Monospace] {
-            fonts
-                .families
-                .entry(family)
-                .or_default()
-                .push("cjk".to_owned());
+            let list = fonts.families.entry(family).or_default();
+            list.insert(0, "cjk".to_owned());
         }
 
         let prop = fonts.families.get(&FontFamily::Proportional).unwrap();
-        assert_eq!(prop.last().map(String::as_str), Some("cjk"));
-        assert!(prop.len() >= 2, "内置字体应当仍排在前面");
+        assert_eq!(
+            prop.first().map(String::as_str),
+            Some("cjk"),
+            "中文字体应当排在首位"
+        );
+        assert!(prop.len() >= 2, "内置字体应当被保留在后面");
         assert!(
             prop.iter().any(|n| n == "Ubuntu-Light"),
-            "内置拉丁字体不应被移除"
+            "内置拉丁字体不应被移除（√ 这类符号还要靠它）"
         );
 
         let mono = fonts.families.get(&FontFamily::Monospace).unwrap();
-        assert_eq!(mono.last().map(String::as_str), Some("cjk"));
+        assert_eq!(mono.first().map(String::as_str), Some("cjk"));
     }
 
     #[test]

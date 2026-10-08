@@ -2,10 +2,9 @@
 //!
 //! 全部与平台无关，只依赖 egui。
 
-use egui::{Color32, TextureHandle, Ui, Vec2};
+use egui::{Color32, CornerRadius, TextureHandle, Ui, Vec2};
 
-/// 列表缩略图的边长。
-const THUMB_SIZE: f32 = 36.0;
+use super::theme;
 
 /// 曲库列表里的一行。
 ///
@@ -25,98 +24,139 @@ pub struct TrackRow<'a> {
     pub playable: bool,
 }
 
-/// 画出一行曲目。返回是否被点击。
+/// 画出一行曲目，高度固定为 [`theme::ROW_HEIGHT`]。返回是否被点击。
+///
+/// 高度固定是**虚拟化列表的前提**：`ScrollArea::show_rows` 需要知道行高
+/// 才能只渲染可见区间。之前这里是自适应高度，因此只能全量渲染，
+/// 几千首曲目会明显卡顿。
+///
+/// 关键点：必须用 `allocate_exact_size` 真正**占用**这段高度。
+/// 只把内容画进一个 `max_rect` 子 Ui 是不够的 —— egui 会按内容自动收缩，
+/// 游标不前进，于是每一行都画在同一个位置，视觉上叠成一团
+/// （这个 bug 实际发生过）。
 pub fn track_row(ui: &mut Ui, row: &TrackRow<'_>) -> bool {
-    let mut clicked = false;
+    let full_width = ui.available_width();
 
-    ui.horizontal(|ui| {
-        // ---- 缩略图 ----
-        let (rect, _resp) = ui.allocate_exact_size(Vec2::splat(THUMB_SIZE), egui::Sense::hover());
-        match row.thumbnail {
-            Some(tex) => {
-                // 按短边等比缩放，避免宽高比失真的封面被拉变形。
-                let size = tex.size_vec2();
-                let scale = (THUMB_SIZE / size.x).max(THUMB_SIZE / size.y);
+    // 真正占用空间：让游标前进整整一行，虚拟化才能对齐。
+    let (row_rect, response) = ui.allocate_exact_size(
+        Vec2::new(full_width, theme::ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+
+    // ---- 背景（先画，避免盖住文字）----
+    let radius = CornerRadius::same(8);
+    if row.is_current {
+        ui.painter()
+            .rect_filled(row_rect, radius, theme::ACCENT_DIM);
+        // 左侧竖条，让「正在播放」更醒目。
+        let bar = egui::Rect::from_min_size(
+            row_rect.min + Vec2::new(0.0, 8.0),
+            Vec2::new(3.0, row_rect.height() - 16.0),
+        );
+        ui.painter()
+            .rect_filled(bar, CornerRadius::same(2), theme::ACCENT);
+    } else if response.hovered() {
+        ui.painter().rect_filled(row_rect, radius, theme::BG_HOVER);
+    }
+
+    // ---- 内容 ----
+    let content_rect = row_rect.shrink2(Vec2::new(10.0, 8.0));
+    let mut content = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+
+    // 缩略图：圆角 + 等比裁剪。
+    let (thumb_rect, _) =
+        content.allocate_exact_size(Vec2::splat(theme::THUMB_SIZE), egui::Sense::hover());
+    let thumb_radius = CornerRadius::same(6);
+    match row.thumbnail {
+        Some(tex) => {
+            let painter = content.painter();
+            painter.rect_filled(thumb_rect, thumb_radius, theme::BG_HOVER);
+            // 裁剪到圆角矩形内，避免非方形封面溢出。
+            let clipped = painter.with_clip_rect(thumb_rect);
+            let size = tex.size_vec2();
+            if size.x > 0.0 && size.y > 0.0 {
+                let scale = (theme::THUMB_SIZE / size.x).max(theme::THUMB_SIZE / size.y);
                 let drawn = size * scale;
-                let offset = (drawn - Vec2::splat(THUMB_SIZE)) * 0.5;
-                let painter = ui.painter();
-                painter.image(
+                let offset = (drawn - Vec2::splat(theme::THUMB_SIZE)) * 0.5;
+                clipped.image(
                     tex.id(),
-                    egui::Rect::from_min_size(rect.min - offset, drawn),
+                    egui::Rect::from_min_size(thumb_rect.min - offset, drawn),
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
             }
-            None => {
-                // 无封面：画一个带边框的占位方块，让行高保持一致。
-                let painter = ui.painter();
-                painter.rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
-                painter.rect_stroke(
-                    rect,
-                    4.0,
-                    egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
-                    egui::StrokeKind::Inside,
-                );
-                painter.text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "♪",
-                    egui::FontId::proportional(16.0),
-                    ui.visuals().weak_text_color(),
-                );
-            }
         }
+        None => {
+            let painter = content.painter();
+            painter.rect_filled(thumb_rect, thumb_radius, theme::BG_HOVER);
+            painter.text(
+                thumb_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "♪",
+                egui::FontId::proportional(16.0),
+                theme::TEXT_FAINT,
+            );
+        }
+    }
 
-        ui.add_space(6.0);
+    content.add_space(12.0);
 
-        // ---- 文字区 ----
-        ui.vertical(|ui| {
-            let mut title = row.title.to_owned();
-            if row.is_current {
-                title = format!("▶ {title}");
-            }
-            if !row.playable {
-                title = format!("{title}（不可播放）");
-            }
-            ui.label(title);
+    // 右侧时长先占位，剩下的宽度给标题/艺术家。
+    let duration_width = 52.0;
+    let text_width = (content.available_width() - duration_width).max(40.0);
+
+    content.allocate_ui_with_layout(
+        Vec2::new(text_width, content_rect.height()),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+
+            let title = if row.is_current {
+                egui::RichText::new(format!("▶ {}", row.title)).color(theme::ACCENT)
+            } else {
+                egui::RichText::new(row.title).color(theme::TEXT)
+            };
+            let title = if row.playable { title } else { title.weak() };
+            // 标题过长时截断，避免把时长挤出去。
+            ui.add(egui::Label::new(title).truncate());
 
             let mut sub = row.artist.to_owned();
-            if !row.duration.is_empty() {
+            if !row.playable {
                 sub = if sub.is_empty() {
-                    row.duration.to_owned()
+                    "不可播放".to_owned()
                 } else {
-                    format!("{} · {}", sub, row.duration)
+                    format!("{sub} · 不可播放")
                 };
             }
             if !sub.is_empty() {
-                ui.small(sub);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(sub).small().color(theme::TEXT_DIM))
+                        .truncate(),
+                );
             }
-        });
-
-        // ---- 右侧留白，让整行都可点击 ----
-        ui.allocate_space(Vec2::new(ui.available_width(), 0.0));
-    });
-
-    // 用整行的矩形做一个覆盖式的点击感应区：
-    // 这样点缩略图、点文字、点空白都能触发播放，而不是只有文字可点。
-    let row_rect = ui.min_rect();
-    let response = ui.interact(
-        row_rect,
-        ui.id().with(("track-row", row.index)),
-        egui::Sense::click(),
+        },
     );
-    if response.clicked() {
-        clicked = true;
-    }
-    if response.hovered() {
-        ui.painter().rect_filled(
-            row_rect.expand(2.0),
-            4.0,
-            ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.35),
-        );
-    }
 
-    clicked
+    // 时长靠右。
+    content.allocate_ui_with_layout(
+        Vec2::new(duration_width, content_rect.height()),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if !row.duration.is_empty() {
+                ui.label(
+                    egui::RichText::new(row.duration)
+                        .small()
+                        .color(theme::TEXT_FAINT),
+                );
+            }
+        },
+    );
+
+    response.clicked()
 }
 
 /// 大封面展示区。返回实际占用的高度。
