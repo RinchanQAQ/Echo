@@ -1,0 +1,13 @@
+# 统一用 LF：本项目同时在 Windows / Linux / macOS 上构建与跑 CI，
+# 行尾不一致会让 diff 与 fmt --check 产生噪音。
+* text=auto eol=lf
+
+# PowerShell 脚本保留 CRLF —— Windows PowerShell 5.1 对它更友好。
+*.ps1 text eol=crlf
+
+# 二进制资源不做行尾转换。
+*.png binary
+*.jpg binary
+*.ico binary
+*.gz binary
+*.xz binary

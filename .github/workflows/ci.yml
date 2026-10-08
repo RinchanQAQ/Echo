@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # 增量编译在 CI 上收益很小，反而会拖慢并占用缓存空间。
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 跨平台矩阵：这是「本项目是否真能跨平台」的**唯一确凿依据**。
+  # 开发机只验证 Windows，Linux/macOS 由这里保证。
+  # ---------------------------------------------------------------------
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+
+      # rodio 在 Linux 上对 ALSA 有**编译期**硬依赖，无法通过架构规避。
+      - name: Linux 依赖（ALSA 开发库）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
+      # Windows runner 自带完整 MSVC，因此不需要仓库里那套
+      # rust-lld + clang-cl 的替代方案；下面这步只是把 SDK 环境变量
+      # 显式导出，确保链接器能找到库。
+      - name: Windows 导出 MSVC 环境
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vsPath = & $vswhere -latest -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+            if ($vsPath) {
+              $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+              if (Test-Path $vcvars) {
+                cmd /c "`"$vcvars`" && set" | ForEach-Object {
+                  if ($_ -match '^([^=]+)=(.*)$') {
+                    Add-Content -Path $env:GITHUB_ENV -Value "$($Matches[1])=$($Matches[2])"
+                  }
+                }
+              }
+            }
+          }
+
+      - name: 格式检查
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: 构建
+        run: cargo build --verbose
+
+      - name: 测试
+        run: cargo test --verbose

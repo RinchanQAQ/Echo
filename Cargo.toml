@@ -1,0 +1,63 @@
+[package]
+name = "echo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "本地音乐播放器 —— egui + Rodio + Lofty + SQLite"
+license = "MIT"
+
+[dependencies]
+# --- GUI ---
+eframe = "=0.36.2"
+egui = "=0.36.2"
+# `image` 特性只是引入 image crate；解码器格式必须另外在下面显式开启，
+# 否则 egui_extras 的图片加载器不会启用任何格式，封面会静默加载失败。
+egui_extras = { version = "=0.36.2", features = ["image", "file"] }
+image = { version = "=0.25.10", default-features = false, features = [
+  "png",
+  "jpeg",
+  "gif",
+  "bmp",
+] }
+
+# --- 音频 ---
+# 默认特性已含 mp3 / flac / wav / mp4(aac) / vorbis；Opus 无法解码。
+rodio = "=0.22.2"
+
+# --- 元数据 ---
+lofty = "=0.25.4"
+
+# --- 数据库 ---
+# bundled：自带 SQLite 源码并用本机 C 工具链编译，不依赖系统 sqlite3。
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+
+# --- 基础设施 ---
+walkdir = "=2.5.0"
+crossbeam-channel = "=0.5.17"
+rayon = "=1.12.0"
+# 用 `pure` 特性走纯 Rust 实现：默认实现会编译 AVX-512 汇编，
+# 而 MSVC 目标下的汇编器 ml64.exe 只随 Visual Studio 分发，
+# 本机（以及任何只有 rust-lld + clang 的环境）都拿不到它。
+# 封面哈希不是性能瓶颈，用纯 Rust 换取「零额外工具依赖」是划算的。
+blake3 = { version = "=1.8.7", features = ["pure"] }
+anyhow = "=1.0.104"
+thiserror = "=2.0.21"
+directories = "=6.0.0"
+log = "=0.4.34"
+env_logger = "=0.11.9"
+rfd = "=0.17.2"
+
+# 说明：这里刻意没有引入 fontique/fontdb 之类的系统字体枚举库。
+# 中文字体由 platform 层按「候选文件路径 + 目录扫描」定位，三平台代码一致、
+# 可单测，且避免在 Linux 上引入 fontconfig 依赖（fontique 的 system 特性会拉
+# 进 yeslogic-fontconfig-sys）。若日后需要按族名做更精细的回退，
+# 可在 platform/mod.rs 里针对单个平台加一个 cfg 分支。
+
+[profile.dev]
+# 默认 debug 信息会让二进制膨胀到数百 MB，降到 1 只保留行号。
+debug = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

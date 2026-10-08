@@ -1,0 +1,55 @@
+# ============================================================================
+# 为什么这里会有这么一份「不像默认配置」的文件
+# ============================================================================
+#
+# 本机（以及任何没装 Visual Studio 的 Windows）缺少 MSVC 构建工具：
+# link.exe 不存在，也没有 C 编译器。为了仍能构建**标准**的
+# x86_64-pc-windows-msvc 目标，这里用两条替代链路：
+#
+#   * 链接：Rust 自带的 rust-lld（即 lld-link，不需要 link.exe）
+#   * 编译 C：LLVM clang-cl（libsqlite3-sys 的 bundled SQLite、blake3 等需要）
+#
+# 所需的 MSVC CRT 与 Windows SDK（库 + 头文件）来自 xwin 的免管理员下载，
+# 全部落在 .tools/ 下。执行 `pwsh -File toolchain/bootstrap.ps1` 可重建。
+#
+# 对其他环境是否有影响？
+#   * CI 的 Windows runner 自带完整 MSVC，会通过 vcvars64.bat 导出
+#     LIB / INCLUDE / CC 等变量；环境里的值优先于下面 [env] 里的同名项，
+#     因此 CI 走的是原生 MSVC 工具链，这些本机路径不会被使用。
+#   * Linux / macOS 不使用 x86_64-pc-windows-msvc 这个目标段，
+#     下面的 [env] 只是几个不会被读取的路径，无害。
+#
+# 注意：cargo 只会读取文件名恰为 `config` 或 `config.toml` 的配置文件，
+# 所以不要试图把这段拆到 config.local.toml 之类自造的名字里 —— 它会被忽略。
+# ============================================================================
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[env]
+# rust-lld 即 lld-link，原生读取 LIB 作为库搜索路径。
+# （经实测，用 rustflags 传 -Clink-arg=/LIBPATH: 不生效，只有该环境变量可靠。）
+LIB = "D:\\Echo\\.tools\\msvc-sdk\\crt\\lib\\x86_64;D:\\Echo\\.tools\\msvc-sdk\\sdk\\lib\\um\\x86_64;D:\\Echo\\.tools\\msvc-sdk\\sdk\\lib\\ucrt\\x86_64"
+
+# 必须是 clang-cl 而不是 clang：cc-rs 在 msvc 目标下会传 `/arch:AVX512`
+# 这类 MSVC 风格参数，GNU 风格的 clang 驱动不认（实测报
+# "no such file or directory: '/arch:AVX512'"），clang-cl 则完全兼容。
+CC = "D:\\Echo\\.tools\\clang\\bin\\clang-cl.exe"
+CXX = "D:\\Echo\\.tools\\clang\\bin\\clang-cl.exe"
+# 打包静态库用的是 MSVC 风格的 lib.exe，clang 自带的 llvm-lib 完全等价。
+AR = "D:\\Echo\\.tools\\clang\\bin\\llvm-lib.exe"
+
+# 把 xwin 提供的头文件目录告诉编译器。用带目标后缀的变量（优先级更高），
+# 这样在有完整 MSVC 的机器上只是多几个冗余 -I，不会破坏构建。
+CFLAGS_x86_64_pc_windows_msvc = "/I D:\\Echo\\.tools\\msvc-sdk\\crt\\include /I D:\\Echo\\.tools\\msvc-sdk\\sdk\\include\\ucrt /I D:\\Echo\\.tools\\msvc-sdk\\sdk\\include\\shared /I D:\\Echo\\.tools\\msvc-sdk\\sdk\\include\\um"
+CFLAGS_x86_64-pc-windows-msvc = "/I D:\\Echo\\.tools\\msvc-sdk\\crt\\include /I D:\\Echo\\.tools\\msvc-sdk\\sdk\\include\\ucrt /I D:\\Echo\\.tools\\msvc-sdk\\sdk\\include\\shared /I D:\\Echo\\.tools\\msvc-sdk\\sdk\\include\\um"
+
+# ----------------------------------------------------------------------------
+# 备选链路：GNU 工具链（w64devkit）
+# 仅当上面这套 MSVC 链路不可用时才用得上，用法见 README。
+# GCC >= 13 不再附带 libgcc_eh.a，而 rustc 的 windows-gnu spec 仍硬编码
+# -lgcc_eh，因此需要 bootstrap.ps1 生成一个空的 libgcc_eh.a。
+# ----------------------------------------------------------------------------
+[target.x86_64-pc-windows-gnu]
+linker = "D:/Echo/.tools/w64devkit/bin/x86_64-w64-mingw32-gcc.exe"
+rustflags = ["-L", "native=D:/Echo/.tools/w64devkit/lib"]
